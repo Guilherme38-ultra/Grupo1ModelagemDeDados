@@ -1,0 +1,208 @@
+CREATE TABLE clientes (
+    id SERIAL PRIMARY KEY,
+    primeiro_nome VARCHAR(100) NOT NULL,
+    ultimo_nome VARCHAR(100) NOT NULL,
+    nome_usuario VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    cpf VARCHAR(14) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    dt_cadastro TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE endereco (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+    logradouro VARCHAR(200) NOT NULL,
+    numero VARCHAR(20) NOT NULL,
+    complemento VARCHAR(100),
+    bairro VARCHAR(100) NOT NULL,
+    cidade VARCHAR(100) NOT NULL,
+    uf CHAR(2) NOT NULL,
+    cep VARCHAR(10) NOT NULL,
+    principal BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE contas (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT NOT NULL REFERENCES clientes(id),
+    tipo tipo_conta NOT NULL,
+    saldo NUMERIC(15,2) NOT NULL DEFAULT 0.00,
+    status status_conta NOT NULL DEFAULT 'ativo',
+    dt_abertura TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE cartoes (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT NOT NULL REFERENCES clientes(id),
+    tipo tipo_cartao NOT NULL,
+    numero BIGINT UNIQUE NOT NULL,
+    limite NUMERIC(15,2),
+    dt_validade DATE NOT NULL,
+    status status_cartao NOT NULL DEFAULT 'ativo'
+);
+
+CREATE TABLE lojista (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT UNIQUE NOT NULL REFERENCES clientes(id),
+    razao_social VARCHAR(200) NOT NULL,
+    cnpj VARCHAR(18) UNIQUE NOT NULL,
+    comissao_percentual NUMERIC(5,2) NOT NULL,
+    frete_percentual NUMERIC(5,2) NOT NULL,
+    avaliacao NUMERIC(3,1) CHECK (avaliacao >= 0.0 AND avaliacao <= 5.0),
+    status status_lojista NOT NULL DEFAULT 'ativo'
+);
+
+CREATE TABLE categoria (
+    id SERIAL PRIMARY KEY,
+    nome VARCHAR(100) UNIQUE NOT NULL,
+    descricao TEXT,
+    status status_categoria NOT NULL DEFAULT 'ativo',
+    dt_criacao TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE transportadora (
+    id SERIAL PRIMARY KEY,
+    nome VARCHAR(200) NOT NULL,
+    cnpj VARCHAR(18) UNIQUE NOT NULL,
+    telefone VARCHAR(20),
+    status status_transportadora NOT NULL DEFAULT 'ativo'
+);
+
+CREATE TABLE transferencias (
+    id SERIAL PRIMARY KEY,
+    remetente INT NOT NULL REFERENCES contas(id),
+    destinatario INT NOT NULL REFERENCES contas(id),
+    data TIMESTAMP DEFAULT NOW(),
+    valor NUMERIC(15,2) NOT NULL CHECK (valor > 0),
+    descricao TEXT,
+    CONSTRAINT chk_remetente_destinatario CHECK (remetente <> destinatario)
+);
+
+CREATE TABLE transacoes (
+    id SERIAL PRIMARY KEY,
+    conta_id INT NOT NULL REFERENCES contas(id),
+    data TIMESTAMP DEFAULT NOW(),
+    tipo VARCHAR(50) NOT NULL,
+    valor NUMERIC(15,2) NOT NULL CHECK (valor > 0),
+    status VARCHAR(50) NOT NULL,
+    descricao TEXT,
+    referencia_id INT
+);
+
+CREATE TABLE produto (
+    id SERIAL PRIMARY KEY,
+    categoria_id INT NOT NULL REFERENCES categoria(id),
+    nome VARCHAR(200) NOT NULL,
+    descricao TEXT NOT NULL,
+    preco NUMERIC(15,2) NOT NULL CHECK (preco > 0),
+    estoque INT NOT NULL CHECK (estoque >= 0),
+    status status_produto NOT NULL DEFAULT 'ativo',
+    dt_cadastro TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE pedido (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT NOT NULL REFERENCES clientes(id),
+    lojista_id INT NOT NULL REFERENCES lojista(id),
+    dt_pedido TIMESTAMP DEFAULT NOW(),
+    dt_entrega TIMESTAMP,
+    total NUMERIC(15,2) NOT NULL,
+    tp_pagamento VARCHAR(50) NOT NULL,
+    status status_pedido NOT NULL DEFAULT 'pendente',
+    pedido_entregue BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE item (
+    id SERIAL PRIMARY KEY,
+    pedido_id INT NOT NULL REFERENCES pedido(id) ON DELETE CASCADE,
+    cod_produto INT NOT NULL REFERENCES produto(id),
+    preco NUMERIC(15,2) NOT NULL,
+    quantidade INT NOT NULL CHECK (quantidade > 0),
+    subtotal NUMERIC(15,2) GENERATED ALWAYS AS (preco * quantidade) STORED
+);
+
+CREATE TABLE frete (
+    id SERIAL PRIMARY KEY,
+    pedido_id INT UNIQUE NOT NULL REFERENCES pedido(id),
+    transportadora_id INT NOT NULL REFERENCES transportadora(id),
+    valor NUMERIC(15,2) NOT NULL,
+    status status_frete NOT NULL DEFAULT 'aguardando',
+    dt_despacho TIMESTAMP,
+    dt_entrega_real TIMESTAMP
+);
+
+CREATE TABLE comissao (
+    id SERIAL PRIMARY KEY,
+    pedido_id INT UNIQUE NOT NULL REFERENCES pedido(id),
+    lojista_id INT NOT NULL REFERENCES lojista(id),
+    percentual NUMERIC(5,2) NOT NULL,
+    valor_bruto NUMERIC(15,2) NOT NULL,
+    valor_comissao NUMERIC(15,2) NOT NULL,
+    valor_liquido NUMERIC(15,2) NOT NULL,
+    status status_comissao NOT NULL DEFAULT 'pendente',
+    dt_calculo TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE estorno (
+    id SERIAL PRIMARY KEY,
+    pedido_id INT UNIQUE NOT NULL REFERENCES pedido(id),
+    solicitante_id INT NOT NULL REFERENCES clientes(id),
+    motivo TEXT NOT NULL,
+    valor_total NUMERIC(15,2) NOT NULL,
+    status status_estorno NOT NULL DEFAULT 'solicitado',
+    dt_solicitacao TIMESTAMP DEFAULT NOW(),
+    dt_processamento TIMESTAMP
+);
+
+CREATE TABLE estorno_parcela (
+    id SERIAL PRIMARY KEY,
+    estorno_id INT NOT NULL REFERENCES estorno(id),
+    tipo_beneficiario tipo_beneficiario NOT NULL,
+    valor NUMERIC(15,2) NOT NULL,
+    status status_parcela NOT NULL DEFAULT 'pendente',
+    dt_processamento TIMESTAMP,
+    observacao TEXT
+);
+
+CREATE TABLE auditoria (
+    id BIGSERIAL PRIMARY KEY,
+    tabela_nome VARCHAR(100) NOT NULL,
+    operacao op_auditoria NOT NULL,
+    dado_antigo JSONB,
+    dado_novo JSONB,
+    usuario_bd VARCHAR(100) DEFAULT CURRENT_USER,
+    dt_operacao TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE log_pedido (
+    id SERIAL PRIMARY KEY,
+    pedido_id INT NOT NULL REFERENCES pedido(id),
+    status_anterior status_pedido,
+    status_novo status_pedido NOT NULL,
+    observacao TEXT,
+    usuario VARCHAR(100) DEFAULT CURRENT_USER,
+    dt_alteracao TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE log_saldo (
+    id BIGSERIAL PRIMARY KEY,
+    conta_id INT NOT NULL REFERENCES contas(id),
+    tipo_operacao tipo_op_saldo NOT NULL,
+    valor_anterior NUMERIC(15,2) NOT NULL,
+    valor_movimentado NUMERIC(15,2) NOT NULL,
+    valor_posterior NUMERIC(15,2) NOT NULL,
+    referencia_tipo VARCHAR(50) NOT NULL,
+    referencia_id INT NOT NULL,
+    dt_movimentacao TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE log_transacao (
+    id BIGSERIAL PRIMARY KEY,
+    transacao_id INT NOT NULL REFERENCES transacoes(id),
+    evento VARCHAR(100) NOT NULL,
+    status_anterior VARCHAR(50),
+    status_novo VARCHAR(50) NOT NULL,
+    dado_snapshot JSONB NOT NULL,
+    usuario VARCHAR(100) DEFAULT CURRENT_USER,
+    dt_evento TIMESTAMP DEFAULT NOW()
+);
