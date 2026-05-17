@@ -206,3 +206,96 @@ CREATE TABLE log_transacao (
     usuario VARCHAR(100) DEFAULT CURRENT_USER,
     dt_evento TIMESTAMP DEFAULT NOW()
 );
+
+-- FUNCTIONS
+
+CREATE OR REPLACE FUNCTION fn_calcular_divisao_estorno(p_estorno_id INT)
+RETURNS VOID AS $$
+DECLARE
+    v_pedido_id INT;
+    v_total_pedido NUMERIC(15,2);
+    v_valor_frete NUMERIC(15,2);
+    v_valor_liquido NUMERIC(15,2);
+    v_valor_comissao NUMERIC(15,2);
+BEGIN
+    SELECT pedido_id INTO v_pedido_id
+    FROM estorno
+    WHERE id = p_estorno_id;
+
+    SELECT total INTO v_total_pedido
+    FROM pedido
+    WHERE id = v_pedido_id;
+
+    SELECT COALESCE(valor, 0.00) INTO v_valor_frete
+    FROM frete
+    WHERE pedido_id = v_pedido_id;
+
+    SELECT valor_liquido, valor_comissao INTO v_valor_liquido, v_valor_comissao
+    FROM comissao
+    WHERE pedido_id = v_pedido_id;
+    
+    INSERT INTO estorno_parcela (estorno_id, tipo_beneficiario, valor, status, observacao)
+    VALUES (p_estorno_id, 'cliente', v_total_pedido, 'pendente', 'Devolução integral ao cliente');
+
+    INSERT INTO estorno_parcela (estorno_id, tipo_beneficiario, valor, status, observacao)
+    VALUES (p_estorno_id, 'lojista', v_valor_liquido, 'pendente', 'Devolução do valor líquido do produto');
+
+    INSERT INTO estorno_parcela (estorno_id, tipo_beneficiario, valor, status, observacao)
+    VALUES (p_estorno_id, 'banco', v_valor_comissao, 'pendente', 'Devolução da taxa de comissão');
+
+    INSERT INTO estorno_parcela (estorno_id, tipo_beneficiario, valor, status, observacao)
+    VALUES (p_estorno_id, 'transportadora', v_valor_frete, 'pendente', 'Devolução do custo de frete');
+
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_tg_cancelamento_pedido()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_estorno_id INT;
+    v_conta_cliente_id INT;
+BEGIN
+    INSERT INTO auditoria (tabela_nome, operacao, dado_antigo, dado_novo, usuario_bd)
+    VALUES (
+        TG_TABLE_NAME,
+        TG_OP::op_auditoria,
+        row_to_json(OLD)::jsonb,
+        row_to_json(NEW)::jsonb,
+        CURRENT_USER
+    );
+
+    IF NEW.status = 'cancelado' AND OLD.status <> 'cancelado' THEN
+
+        INSERT INTO estorno (pedido_id, solicitante_id, motivo, valor_total, status)
+        VALUES (NEW.id, NEW.cliente_id, 'Cancelamento processado via sistema', NEW.total, 'processando')
+        RETURNING id INTO v_estorno_id;
+        PERFORM fn_calcular_divisao_estorno(v_estorno_id);
+        UPDATE frete SET status = 'devolvido' WHERE pedido_id = NEW.id;
+        UPDATE comissao SET status = 'estornado' WHERE pedido_id = NEW.id;
+        SELECT id INTO v_conta_cliente_id FROM contas WHERE cliente_id = NEW.cliente_id LIMIT 1;
+        IF v_conta_cliente_id IS NOT NULL THEN
+            UPDATE contas
+            SET saldo = saldo + NEW.total
+            WHERE id = v_conta_cliente_id;
+            INSERT INTO log_saldo (
+                conta_id, tipo_operacao, valor_anterior,
+                valor_movimentado, valor_posterior,
+                referencia_tipo, referencia_id
+            )
+            SELECT
+                v_conta_cliente_id, 'estorno_credito', saldo - NEW.total,
+                NEW.total, saldo,
+                'estorno', v_estorno_id
+            FROM contas WHERE id = v_conta_cliente_id;
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- TRIGGERS
+
+CREATE TRIGGER trg_cancelamento_pedido
+AFTER UPDATE ON pedido
+FOR EACH ROW
+EXECUTE FUNCTION fn_tg_cancelamento_pedido();
