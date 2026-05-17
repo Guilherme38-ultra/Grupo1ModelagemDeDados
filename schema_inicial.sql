@@ -487,6 +487,202 @@ AFTER INSERT ON frete
 FOR EACH ROW
 EXECUTE FUNCTION fn_tg_gerar_comissao();
 
+-- ============================================================
+-- PROCEDURE: sp_fechamento_financeiro
+-- Tabela de destino do fechamento (crie uma vez, antes da procedure)
+CREATE TABLE IF NOT EXISTS fechamento_financeiro (
+    id               SERIAL PRIMARY KEY,
+    lojista_id       INT            NOT NULL REFERENCES lojista(id),
+    periodo_inicio   DATE           NOT NULL,
+    periodo_fim      DATE           NOT NULL,
+    total_pedidos    INT            NOT NULL DEFAULT 0,
+    total_vendas     NUMERIC(15,2)  NOT NULL DEFAULT 0.00,
+    total_comissoes  NUMERIC(15,2)  NOT NULL DEFAULT 0.00,
+    total_estornos   NUMERIC(15,2)  NOT NULL DEFAULT 0.00,
+    saldo_liquido    NUMERIC(15,2)  NOT NULL DEFAULT 0.00,
+    status           VARCHAR(20)    NOT NULL DEFAULT 'processado',
+    gerado_em        TIMESTAMP      DEFAULT NOW(),
+    usuario_bd       VARCHAR(100)   DEFAULT CURRENT_USER,
+    CONSTRAINT uq_fechamento UNIQUE (lojista_id, periodo_inicio, periodo_fim)
+);
+
+-- Procedure principal
+CREATE OR REPLACE PROCEDURE sp_fechamento_financeiro(
+    p_lojista_id    INT,
+    p_data_inicio   DATE,
+    p_data_fim      DATE
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_total_pedidos     INT           := 0;
+    v_total_vendas      NUMERIC(15,2) := 0.00;
+    v_total_comissoes   NUMERIC(15,2) := 0.00;
+    v_total_estornos    NUMERIC(15,2) := 0.00;
+    v_saldo_liquido     NUMERIC(15,2) := 0.00;
+
+    v_check             INT;
+BEGIN
+    SELECT COUNT(1) INTO v_check
+    FROM lojista
+    WHERE id = p_lojista_id AND status = 'ativo';
+
+    IF v_check = 0 THEN
+        RAISE EXCEPTION 'Lojista id=% não encontrado ou inativo.', p_lojista_id;
+    END IF;
+    IF p_data_inicio > p_data_fim THEN
+        RAISE EXCEPTION 'Data de início (%) não pode ser maior que data fim (%).', p_data_inicio, p_data_fim;
+    END IF;
+
+    SELECT
+        COUNT(p.id),
+        COALESCE(SUM(p.total), 0.00),
+        COALESCE(SUM(c.valor_liquido), 0.00)
+    INTO
+        v_total_pedidos,
+        v_total_vendas,
+        v_total_comissoes
+    FROM pedido p
+    JOIN comissao c ON c.pedido_id = p.id
+    WHERE
+        p.lojista_id   = p_lojista_id
+        AND p.status   = 'entregue'
+        AND c.status   = 'pago'
+        AND p.dt_pedido::DATE BETWEEN p_data_inicio AND p_data_fim;
+
+    SELECT COALESCE(SUM(ep.valor), 0.00)
+    INTO v_total_estornos
+    FROM estorno e
+    JOIN pedido p          ON p.id = e.pedido_id
+    JOIN estorno_parcela ep ON ep.estorno_id = e.id
+    WHERE
+        p.lojista_id            = p_lojista_id
+        AND ep.tipo_beneficiario = 'lojista'
+        AND e.status             = 'concluido'
+        AND e.dt_processamento::DATE BETWEEN p_data_inicio AND p_data_fim;
+
+    v_saldo_liquido := v_total_comissoes - v_total_estornos;
+
+    INSERT INTO fechamento_financeiro (
+        lojista_id,
+        periodo_inicio,
+        periodo_fim,
+        total_pedidos,
+        total_vendas,
+        total_comissoes,
+        total_estornos,
+        saldo_liquido,
+        status,
+        gerado_em,
+        usuario_bd
+    )
+    VALUES (
+        p_lojista_id,
+        p_data_inicio,
+        p_data_fim,
+        v_total_pedidos,
+        v_total_vendas,
+        v_total_comissoes,
+        v_total_estornos,
+        v_saldo_liquido,
+        'processado',
+        NOW(),
+        CURRENT_USER
+    )
+    ON CONFLICT (lojista_id, periodo_inicio, periodo_fim)
+    DO UPDATE SET
+        total_pedidos   = EXCLUDED.total_pedidos,
+        total_vendas    = EXCLUDED.total_vendas,
+        total_comissoes = EXCLUDED.total_comissoes,
+        total_estornos  = EXCLUDED.total_estornos,
+        saldo_liquido   = EXCLUDED.saldo_liquido,
+        status          = 'reprocessado',
+        gerado_em       = NOW(),
+        usuario_bd      = CURRENT_USER;
+
+    INSERT INTO auditoria (tabela_nome, operacao, dado_novo, usuario_bd)
+    VALUES (
+        'fechamento_financeiro',
+        'INSERT',
+        jsonb_build_object(
+            'lojista_id',      p_lojista_id,
+            'periodo_inicio',  p_data_inicio,
+            'periodo_fim',     p_data_fim,
+            'total_pedidos',   v_total_pedidos,
+            'total_vendas',    v_total_vendas,
+            'total_comissoes', v_total_comissoes,
+            'total_estornos',  v_total_estornos,
+            'saldo_liquido',   v_saldo_liquido
+        ),
+        CURRENT_USER
+    );
+
+    RAISE NOTICE 'Fechamento concluído para lojista_id=%. Saldo líquido: R$ %',
+        p_lojista_id, v_saldo_liquido;
+
+END;
+$$;
+
+
+-- ============================================================
+-- VIEW: vw_saldo_liquido_lojista
+
+CREATE OR REPLACE VIEW vw_saldo_liquido_lojista AS
+
+WITH vendas_por_lojista AS (
+    SELECT
+        l.id                             AS lojista_id,
+        l.razao_social                   AS nome_lojista,
+        l.cnpj,
+        l.comissao_percentual,
+        COUNT(p.id)                      AS total_pedidos,
+        COALESCE(SUM(p.total), 0.00)     AS total_bruto_vendas,
+        COALESCE(SUM(c.valor_comissao), 0.00) AS total_taxa_banco,
+        COALESCE(SUM(c.valor_liquido), 0.00)  AS total_liquido_vendas
+    FROM lojista l
+    LEFT JOIN pedido p  ON p.lojista_id = l.id AND p.status = 'entregue'
+    LEFT JOIN comissao c ON c.pedido_id = p.id AND c.status = 'pago'
+    GROUP BY l.id, l.razao_social, l.cnpj, l.comissao_percentual
+),
+
+estornos_por_lojista AS (
+    SELECT
+        p.lojista_id,
+        COUNT(DISTINCT e.id)             AS total_estornos,
+        COALESCE(SUM(ep.valor), 0.00)    AS total_valor_estornado
+    FROM estorno e
+    JOIN pedido p          ON p.id = e.pedido_id
+    JOIN estorno_parcela ep ON ep.estorno_id = e.id
+                        AND ep.tipo_beneficiario = 'lojista'
+                        AND ep.status = 'processado'
+    WHERE e.status = 'concluido'
+    GROUP BY p.lojista_id
+)
+
+SELECT
+    v.lojista_id,
+    v.nome_lojista,
+    v.cnpj,
+    v.comissao_percentual AS taxa_comissao_pct,
+
+    v.total_pedidos AS qtd_pedidos_pagos,
+    v.total_bruto_vendas AS total_bruto_vendas,
+    v.total_taxa_banco AS total_retido_banco,
+    v.total_liquido_vendas AS total_liquido_vendas,
+
+    COALESCE(e.total_estornos, 0) AS qtd_estornos,
+    COALESCE(e.total_valor_estornado, 0.00) AS total_devolvido_estorno,
+
+    (v.total_liquido_vendas
+        - COALESCE(e.total_valor_estornado, 0.00)) AS saldo_liquido_final,
+
+    NOW() AS gerado_em
+
+FROM vendas_por_lojista v
+LEFT JOIN estornos_por_lojista e ON e.lojista_id = v.lojista_id
+ORDER BY saldo_liquido_final DESC;
+
+
 -- Selects
 select * from clientes
 select * from endereco
