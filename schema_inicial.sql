@@ -1,3 +1,96 @@
+-- Enums
+CREATE TYPE tipo_conta AS ENUM (
+    'corrente',
+    'poupanca',
+    'digital'
+);
+
+CREATE TYPE status_conta AS ENUM (
+    'ativo',
+    'inativo'
+);
+
+CREATE TYPE tipo_cartao AS ENUM (
+    'credito',
+    'debito',
+    'pre-pago'
+);
+
+CREATE TYPE status_lojista AS ENUM (
+    'ativo',
+    'inativo'
+);
+
+CREATE TYPE status_categoria AS ENUM (
+    'ativo',
+    'inativo'
+);
+
+CREATE TYPE status_transportadora AS ENUM (
+    'ativo',
+    'inativo'
+);
+
+CREATE TYPE status_produto AS ENUM (
+    'ativo',
+    'inativo'
+);
+
+CREATE TYPE status_pedido AS ENUM (
+    'pendente',
+    'aprovado',
+    'enviado',
+    'entregue',
+    'cancelado'
+);
+
+CREATE TYPE status_frete AS ENUM (
+    'aguardando',
+    'em_transito',
+    'entregue',
+    'devolvido'
+);
+
+CREATE TYPE status_comissao AS ENUM (
+    'pendente',
+    'pago',
+    'estornado'
+);
+
+CREATE TYPE status_estorno AS ENUM (
+    'solicitado',
+    'processando',
+    'concluido',
+    'rejeitado'
+);
+
+CREATE TYPE tipo_beneficiario AS ENUM (
+    'cliente',
+    'lojista',
+    'transportadora',
+    'banco'
+);
+
+CREATE TYPE status_parcela AS ENUM (
+    'pendente',
+    'processado',
+    'falhou'
+);
+
+CREATE TYPE op_auditoria AS ENUM (
+    'INSERT',
+    'UPDATE',
+    'DELETE'
+);
+
+CREATE TYPE tipo_op_saldo AS ENUM (
+    'credito',
+    'debito',
+    'estorno_credito',
+    'estorno_debito'
+);
+
+-- Tabelas
 CREATE TABLE clientes (
     id SERIAL PRIMARY KEY,
     primeiro_nome VARCHAR(100) NOT NULL,
@@ -299,3 +392,25 @@ CREATE TRIGGER trg_cancelamento_pedido
 AFTER UPDATE ON pedido
 FOR EACH ROW
 EXECUTE FUNCTION fn_tg_cancelamento_pedido();
+
+-- Selects
+select * from clientes
+select * from endereco
+select * from contas
+select * from cartoes
+select * from lojista
+select * from categoria
+select * from transportadora
+select * from transferencias
+select * from transacoes
+select * from produto
+select * from pedido
+select * from item
+select * from frete
+select * from comissao
+select * from estorno
+select * from estorno_parcela
+select * from auditoria;
+select * from log_pedido;
+select * from log_saldo;
+select * from log_transacao;
