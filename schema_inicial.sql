@@ -302,6 +302,7 @@ CREATE TABLE log_transacao (
 
 -- FUNCTIONS
 
+
 CREATE OR REPLACE FUNCTION fn_calcular_divisao_estorno(p_estorno_id INT)
 RETURNS VOID AS $$
 DECLARE
@@ -386,12 +387,105 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION fn_tg_log_pedido()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        INSERT INTO log_pedido (pedido_id, status_anterior, status_novo, observacao)
+        VALUES (NEW.id, NULL, NEW.status, 'Pedido criado no sistema');
+    ELSIF (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status) THEN
+        INSERT INTO log_pedido (pedido_id, status_anterior, status_novo, observacao)
+        VALUES (NEW.id, OLD.status, NEW.status, 'Status atualizado automaticamente');
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_tg_log_transacao()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        INSERT INTO log_transacao (transacao_id, evento, status_anterior, status_novo, dado_snapshot)
+        VALUES (NEW.id, 'criada', NULL, NEW.status, row_to_json(NEW)::jsonb);
+        
+    ELSIF (TG_OP = 'UPDATE' AND OLD.status IS DISTINCT FROM NEW.status) THEN
+        INSERT INTO log_transacao (transacao_id, evento, status_anterior, status_novo, dado_snapshot)
+        VALUES (NEW.id, 'atualizada', OLD.status, NEW.status, row_to_json(NEW)::jsonb);
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_tg_controle_estoque()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF (TG_OP = 'INSERT') THEN
+        UPDATE produto
+        SET estoque = estoque - NEW.quantidade
+        WHERE id = NEW.cod_produto;
+        RETURN NEW;
+    ELSIF (TG_OP = 'DELETE') THEN
+        UPDATE produto
+        SET estoque = estoque + OLD.quantidade
+        WHERE id = OLD.cod_produto;
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_tg_gerar_comissao()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_lojista_id INT;
+    v_total_pedido NUMERIC(15,2);
+    v_percentual NUMERIC(5,2);
+    v_valor_bruto NUMERIC(15,2);
+    v_valor_comissao NUMERIC(15,2);
+    v_valor_liquido NUMERIC(15,2);
+BEGIN
+    SELECT p.lojista_id, p.total, l.comissao_percentual
+    INTO v_lojista_id, v_total_pedido, v_percentual
+    FROM pedido p
+    JOIN lojista l ON p.lojista_id = l.id
+    WHERE p.id = NEW.pedido_id;
+    v_valor_bruto := v_total_pedido - NEW.valor;
+    v_valor_comissao := (v_valor_bruto * v_percentual) / 100;
+    v_valor_liquido := v_valor_bruto - v_valor_comissao;
+    INSERT INTO comissao (pedido_id, lojista_id, percentual, valor_bruto, valor_comissao, valor_liquido, status)
+    VALUES (NEW.pedido_id, v_lojista_id, v_percentual, v_valor_bruto, v_valor_comissao, v_valor_liquido, 'pendente');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 -- TRIGGERS
 
 CREATE TRIGGER trg_cancelamento_pedido
 AFTER UPDATE ON pedido
 FOR EACH ROW
 EXECUTE FUNCTION fn_tg_cancelamento_pedido();
+
+CREATE TRIGGER trg_log_pedido
+AFTER INSERT OR UPDATE ON pedido
+FOR EACH ROW
+EXECUTE FUNCTION fn_tg_log_pedido();
+
+CREATE TRIGGER trg_log_transacao
+AFTER INSERT OR UPDATE ON transacoes
+FOR EACH ROW
+EXECUTE FUNCTION fn_tg_log_transacao();
+
+CREATE TRIGGER trg_controle_estoque
+AFTER INSERT OR DELETE ON item
+FOR EACH ROW
+EXECUTE FUNCTION fn_tg_controle_estoque();
+
+CREATE TRIGGER trg_gerar_comissao
+AFTER INSERT ON frete
+FOR EACH ROW
+EXECUTE FUNCTION fn_tg_gerar_comissao();
 
 -- Selects
 select * from clientes
