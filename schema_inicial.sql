@@ -16,6 +16,12 @@ CREATE TYPE tipo_cartao AS ENUM (
     'pre-pago'
 );
 
+CREATE TYPE status_cartao AS ENUM (
+    'ativo',
+    'bloqueado',
+    'cancelado'
+);
+
 CREATE TYPE status_lojista AS ENUM (
     'ativo',
     'inativo'
