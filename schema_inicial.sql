@@ -688,25 +688,336 @@ FROM vendas_por_lojista v
 LEFT JOIN estornos_por_lojista e ON e.lojista_id = v.lojista_id
 ORDER BY saldo_liquido_final DESC;
 
+-- LIMPANDO O BANCO
+TRUNCATE TABLE
+estorno_parcela,
+estorno,
+comissao,
+frete,
+item,
+pedido,
+produto,
+transacoes,
+transferencias,
+transportadora,
+categoria,
+lojista,
+cartoes,
+contas,
+endereco,
+clientes,
+auditoria,
+log_pedido,
+log_saldo,
+log_transacao,
+fechamento_financeiro
+RESTART IDENTITY CASCADE;
 
--- Selects
-select * from clientes
-select * from endereco
-select * from contas
-select * from cartoes
-select * from lojista
-select * from categoria
-select * from transportadora
-select * from transferencias
-select * from transacoes
-select * from produto
-select * from pedido
-select * from item
-select * from frete
-select * from comissao
-select * from estorno
-select * from estorno_parcela
-select * from auditoria;
-select * from log_pedido;
-select * from log_saldo;
-select * from log_transacao;
+
+-- ============================================================
+-- DATALOAD
+
+-- CLIENTES (500)
+INSERT INTO clientes (
+    primeiro_nome,
+    ultimo_nome,
+    nome_usuario,
+    email,
+    cpf,
+    phone
+)
+SELECT
+    'Cliente' || gs,
+    'Teste',
+    'usuario' || gs,
+    'usuario' || gs || '@gmail.com',
+    LPAD(gs::TEXT, 11, '0'),
+    '(11)99999-' || LPAD(gs::TEXT, 4, '0')
+FROM generate_series(1, 500) gs;
+
+
+-- ENDEREÇOS (500)
+INSERT INTO endereco (
+    cliente_id,
+    logradouro,
+    numero,
+    complemento,
+    bairro,
+    cidade,
+    uf,
+    cep,
+    principal
+)
+SELECT
+    id,
+    'Rua Exemplo ' || id,
+    id::TEXT,
+    'Apto ' || id,
+    'Centro',
+    'São Paulo',
+    'SP',
+    '01000-000',
+    TRUE
+FROM clientes;
+
+
+-- CONTAS (500)
+INSERT INTO contas (
+    cliente_id,
+    tipo,
+    saldo,
+    status
+)
+SELECT
+    id,
+    (ARRAY['corrente','poupanca','digital'])[floor(random()*3+1)]::tipo_conta,
+    round((random()*10000)::numeric,2),
+    'ativo'
+FROM clientes;
+
+
+-- CARTÕES (500)
+INSERT INTO cartoes (
+    cliente_id,
+    tipo,
+    numero,
+    limite,
+    dt_validade,
+    status
+)
+SELECT
+    id,
+    (ARRAY['credito','debito','pre-pago'])[floor(random()*3+1)]::tipo_cartao,
+    4000000000000000 + id,
+    round((random()*5000)::numeric,2),
+    CURRENT_DATE + INTERVAL '5 years',
+    'ativo'
+FROM clientes;
+
+
+-- LOJISTAS (100)
+INSERT INTO lojista (
+    cliente_id,
+    razao_social,
+    cnpj,
+    comissao_percentual,
+    frete_percentual,
+    avaliacao,
+    status
+)
+SELECT
+    id,
+    'Loja ' || id,
+    LPAD((id+1000)::TEXT, 14, '0'),
+    round((5 + random()*10)::numeric,2),
+    round((2 + random()*5)::numeric,2),
+    round((3 + random()*2)::numeric,1),
+    'ativo'
+FROM clientes
+WHERE id <= 100;
+
+
+-- CATEGORIAS (20)
+INSERT INTO categoria (
+    nome,
+    descricao,
+    status
+)
+SELECT
+    'Categoria ' || gs,
+    'Descrição categoria ' || gs,
+    'ativo'
+FROM generate_series(1,20) gs;
+
+
+-- TRANSPORTADORAS (20)
+INSERT INTO transportadora (
+    nome,
+    cnpj,
+    telefone,
+    status
+)
+SELECT
+    'Transportadora ' || gs,
+    LPAD((gs+5000)::TEXT, 14, '0'),
+    '(11)98888-' || LPAD(gs::TEXT,4,'0'),
+    'ativo'
+FROM generate_series(1,20) gs;
+
+
+-- PRODUTOS (500)
+INSERT INTO produto (
+    categoria_id,
+    nome,
+    descricao,
+    preco,
+    estoque,
+    status
+)
+SELECT
+    (random()*19 + 1)::INT,
+    'Produto ' || gs,
+    'Descrição produto ' || gs,
+    round((10 + random()*1000)::numeric,2),
+    1000 + (random()*500)::INT,
+    'ativo'
+FROM generate_series(1,500) gs;
+
+
+-- PEDIDOS (500)
+INSERT INTO pedido (
+    cliente_id,
+    lojista_id,
+    dt_pedido,
+    total,
+    tp_pagamento,
+    status,
+    pedido_entregue
+)
+SELECT
+    (random()*499 + 1)::INT,
+    (random()*99 + 1)::INT,
+    NOW() - (random()*365 || ' days')::INTERVAL,
+    round((50 + random()*3000)::numeric,2),
+    (ARRAY['credito','debito','pix'])[floor(random()*3+1)],
+    (ARRAY['pendente','aprovado','enviado','entregue'])[
+        floor(random()*4+1)
+    ]::status_pedido,
+    random() > 0.3
+FROM generate_series(1,500);
+
+
+-- ITENS (1000)
+INSERT INTO item (
+    pedido_id,
+    cod_produto,
+    preco,
+    quantidade
+)
+SELECT
+    (random()*499 + 1)::INT,
+    (random()*499 + 1)::INT,
+    round((10 + random()*1000)::numeric,2),
+    (random()*5 + 1)::INT
+FROM generate_series(1,1000);
+
+
+-- FRETES (500)
+-- DISPARA TRIGGER DE COMISSÃO AUTOMATICAMENTE
+INSERT INTO frete (
+    pedido_id,
+    transportadora_id,
+    valor,
+    status,
+    dt_despacho
+)
+SELECT
+    id,
+    (random()*19 + 1)::INT,
+    round((10 + random()*100)::numeric,2),
+    'entregue',
+    NOW()
+FROM pedido;
+
+
+-- TRANSAÇÕES (500)
+-- DISPARA TRIGGER DE LOG
+INSERT INTO transacoes (
+    conta_id,
+    tipo,
+    valor,
+    status,
+    descricao,
+    referencia_id
+)
+SELECT
+    (random()*499 + 1)::INT,
+    'pagamento',
+    round((10 + random()*5000)::numeric,2),
+    'processado',
+    'Pagamento processado',
+    gs
+FROM generate_series(1,500) gs;
+
+
+-- TRANSFERÊNCIAS (300)
+INSERT INTO transferencias (
+    remetente,
+    destinatario,
+    valor,
+    descricao
+)
+SELECT
+    a,
+    b,
+    round((10 + random()*1000)::numeric,2),
+    'Transferência teste'
+FROM (
+    SELECT
+        (random()*499 + 1)::INT AS a,
+        (random()*499 + 1)::INT AS b
+    FROM generate_series(1,300)
+) t
+WHERE a <> b;
+
+
+-- CANCELAMENTOS
+-- DISPARA:
+-- - ESTORNO
+-- - AUDITORIA
+-- - LOG_SALDO
+-- - ESTORNO_PARCELA
+UPDATE pedido
+SET status = 'cancelado'
+WHERE id IN (1,2,3,4,5,6,7,8,9,10);
+
+
+-- AJUSTE COMISSÕES PAGAS
+UPDATE comissao
+SET status = 'pago'
+WHERE id <= 200;
+
+
+-- AJUSTE ESTORNOS CONCLUÍDOS
+UPDATE estorno
+SET
+    status = 'concluido',
+    dt_processamento = NOW()
+WHERE id <= 10;
+
+UPDATE estorno_parcela
+SET
+    status = 'processado',
+    dt_processamento = NOW()
+WHERE estorno_id <= 10;
+
+
+-- EXECUÇÃO DA PROCEDURE
+CALL sp_fechamento_financeiro(
+    1,
+    '2026-01-01',
+    '2026-12-31'
+);
+
+
+-- TESTES FINAIS
+SELECT * FROM clientes;
+SELECT * FROM endereco;
+SELECT * FROM contas;
+SELECT * FROM cartoes;
+SELECT * FROM lojista;
+SELECT * FROM categoria;
+SELECT * FROM transportadora;
+SELECT * FROM produto;
+SELECT * FROM pedido;
+SELECT * FROM item;
+SELECT * FROM frete;
+SELECT * FROM comissao;
+SELECT * FROM estorno;
+SELECT * FROM estorno_parcela;
+SELECT * FROM auditoria;
+SELECT * FROM log_pedido;
+SELECT * FROM log_saldo;
+SELECT * FROM log_transacao;
+SELECT * FROM fechamento_financeiro;
+SELECT * FROM vw_saldo_liquido_lojista;
